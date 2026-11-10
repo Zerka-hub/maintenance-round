@@ -75,7 +75,7 @@ On a first run, create `baselines.md` and `lessons.md` at step 0 (a title line i
 9  close                                                     orchestrator
 ```
 
-Why this order: distilling first drains the lessons backlog, so the audit measures drift and not backlog. The structure audit precedes the claims check, which assumes the files it compares exist. The audits only stage; the closing distil is the one place approved changes land. Health touches no document, so it runs in parallel. Simplification comes last so it cuts against the final state.
+Why this order: distilling first drains the lessons backlog, so the audit measures drift and not backlog. The structure audit precedes the claims check, which assumes the files it compares exist. The audits only stage; the closing distil is the one place approved changes land. Simplification comes last, against the final state.
 
 Each step's brief: `references/briefs.md`. Pass it verbatim with the placeholders filled; quote the human's words, never paraphrase them.
 
@@ -133,7 +133,7 @@ Brief: `references/briefs.md § Simplify`; classes and keep-list: `references/si
 - One drafter per owner (or per file group) can run in parallel. Drafters write to `diffs/simplify-*.md` and apply nothing.
 - Every hunk names its class; length alone is never a reason. Keep-list items stay even when a signal matches.
 - Before removing a kind of line everywhere, grep for a step that reads it.
-- A file that earns no hunk is reported clean. If the package is empty and step 6 has no tier B items, say so and end the round at step 9: a clean surface is a result.
+- A file that earns no hunk is reported clean; an empty package ends the round at step 9.
 
 Present the package hunk by hunk (class, why, words before → after, confidence) in gate 1's shape, high-confidence hunks in the batch, together with step 6's tier B and C items. Items answered "later" at gate 1 are not asked again this round. Nothing the human does not take is applied.
 
