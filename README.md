@@ -58,7 +58,7 @@ You answer `D1 a`, or `BATCH yes except 3`. Nothing is applied before that.
 **Claude Code**, for one project:
 
 ```sh
-git clone <this-repo-url> .claude/skills/maintenance-round
+git clone https://github.com/Zerka-hub/maintenance-round .claude/skills/maintenance-round
 ```
 
 or for all your projects, clone into `~/.claude/skills/maintenance-round`.
