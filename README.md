@@ -15,7 +15,7 @@ This skill makes an agent audit that layer on a schedule, and **stop twice to as
 | Reads your instruction files, notes and git history | Change a rule's meaning without showing you the exact diff first |
 | Tests every "this is true" sentence against reality | Push, delete data, rewrite history or upgrade anything |
 | Turns a lesson into a rule only when it was seen twice | Read the contents of secret-shaped files (it reports names only) |
-| Records every removed line verbatim, so any cut can be put back | Make network calls or install packages |
+| Records every removed line verbatim, so any cut can be put back | Install packages. The helper script makes no network calls; the agent may run read-only checks you already have, such as `gh` or `npm audit` |
 | Stops at two gates and waits for your answer | Treat silence as approval |
 
 Everything in this repository is plain text: seven Markdown files and one Python file that uses only the standard library. Read them before you run anything. `scripts/mr.py` is the only code; it measures and reports, and it never edits a project file.
@@ -111,7 +111,7 @@ scripts/mr.py                  the helper: measures, compares, never edits
 - Talimatların hâlâ gerçeği yansıtıp yansıtmadığını kontrol eder: "her gece yedekleniyor" yazıyorsa gerçekten yedekleniyor mu?
 - Tekrar eden hataları kural önerisine çevirir, şişmiş dosyaları sadeleştirmeyi önerir.
 - **İki kez durur ve size sorar.** Onaylamadığınız hiçbir değişikliği uygulamaz.
-- Hiçbir şeyi silmez, push etmez, internete bağlanmaz. Tüm dosyalar düz metindir; çalıştırmadan önce okuyabilirsiniz.
+- Hiçbir şeyi silmez, push etmez, paket kurmaz. Yardımcı script internete bağlanmaz. Tüm dosyalar düz metindir; çalıştırmadan önce okuyabilirsiniz.
 
 Kurulum: bu klasörü projenizde `.claude/skills/maintenance-round` altına koyun ve agent'ınıza "bakım turu çalıştır" deyin.
 
