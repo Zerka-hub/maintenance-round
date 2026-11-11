@@ -12,7 +12,7 @@ Judge every hunk against the model that will read the file. Current models follo
 - **D2 - one rule, one home.** The same rule in two places becomes one home plus a pointer. A second copy stays only where it is the copy the actor reads at that exact step.
 - **D3 - sections stay disjoint.** Process is the procedure; no Process step is ever deleted. Quality bar: only measurable checks the process does not imply. Rules/feedback: only what the process does not contain.
 - **D4 - person or project names inside a general skill** move to the project's own files; the general rule stays.
-- **PP-1 - pressure language.** Capitals (MUST, NEVER, CRITICAL), `!!`, emphasis with no reason beside it; hedges ("try to", "if possible") on what is actually required. Replace with the plain instruction plus its reason.
+- **PP-1 - pressure language.** Capitals (MUST, NEVER, CRITICAL), `!!`, emphasis with no reason beside it; hedges ("try to", "if possible") on what is actually required. Replace with the plain instruction plus its reason. The helper recognises English and Turkish capitals (MUST, NEVER, ASLA, MUTLAKA, KRİTİK and the like); in any other language, find them by reading. A hit on a line about approval, secrets, deletion, production, backups or pushes is printed with `[safety rule: likely keep]`: see keep-list item 8.
 - **PP-2 - choreography for judgement work.** A fixed sequence of moves for a task whose order does not matter ("first read X, then think about Y"). State the goal and the constraints.
 - **PP-3 - prohibition without a reason.** Judge each line alone. A line encoding a real constraint (safety, data, authority, money) keeps its prohibition and gains its reason; a line with no traceable reason is a removal candidate.
 - **PP-4 - patch accretion.** Narrow special cases, each traceable to one incident, standing where a principle should. Generalise the principle in one line; keep any special case the principle does not cover.
@@ -30,6 +30,7 @@ Judge every hunk against the model that will read the file. Current models follo
 5. **Trigger text may carry calibrated urgency:** a description, a when-to-use list, a routing row. Flag shouting in bodies, not in triggers.
 6. **Tool and script contract detail stays and may grow:** flags, limits, exit codes, what a script does not check.
 7. **Records are out of scope:** lessons ledgers, decision records, changelogs and reports carry history as their payload.
+8. **Deliberate emphasis on a safety rule stays.** A capital or a "never" on a line that guards approval, privacy, secrets, money, data loss or production is doing its job. Keep the emphasis; the most a hunk may do is add the missing reason beside it. List these under kept-against-signal, never as PP-1 hunks.
 8. **A clean surface is a valid outcome.** No hunk is manufactured to fill a package.
 
 ## Before removing a kind of line everywhere

@@ -25,7 +25,8 @@ The skill's own folder and .maintenance/ are never scanned: they are the tool, n
 import hashlib
 import json
 import os
-VERSION = "1.1"
+VERSION = "1.4"
+import fnmatch
 import re
 import subprocess
 import sys
@@ -35,18 +36,31 @@ import shutil
 DEFAULT_LIMITS = {
     # words, unless the key says otherwise. Real-fleet values; tune per project.
     "top_words": 4500,          # an auto-loaded instruction file (CLAUDE.md, AGENTS.md, ...)
-    "top_bytes": 32768,         # what some runtimes truncate at; never sum chains
+    "top_bytes": None,          # Codex only: see codex_limit(). A number here overrides what Codex is set to
     "skill_words": 3000,        # one skill / command body
     "agent_words": 1200,        # one subagent definition
     "rule_file_words": 1500,    # one rules file (.cursor/rules, .github/instructions)
     "memory_lines": 200,        # a lessons / memory file
     "memory_words": 2000,
     "rule_bullet_words": 60,    # one bullet in a lessons / rules section
+    "exclude": [],              # extra paths to leave out, as globs relative to ROOT ("drafts/*", "old/**")
+}
+
+LIMIT_WHY = {
+    "top_words": "auto-loaded into every session, so every word costs context each time",
+    "top_bytes": "Codex only: it stops reading AGENTS.md at project_doc_max_bytes (32 KiB unless changed); other runtimes have no such cut",
+    "skill_words": "read only when the skill is used, so it may be longer than a top-level file",
+    "agent_words": "a subagent's whole definition is loaded each time it is spawned",
+    "rule_file_words": "rule files are usually attached by path or glob, several at once",
+    "memory_lines": "a lessons file past this stops being read to the end",
+    "memory_words": "same file, measured in words",
+    "rule_bullet_words": "a bullet longer than this is usually two rules or a story",
+    "exclude": "globs for folders that hold copies, drafts or archives of instruction files",
 }
 
 SKIP_DIRS = {".git", "node_modules", "vendor", "dist", "build", ".venv", "venv",
              "__pycache__", ".maintenance", "third_party", ".next", "target",
-             ".tox", ".cache", "coverage"}
+             ".tox", ".cache", "coverage", "site-packages", "worktrees"}
 
 TOP_NAMES = {"CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "AGENTS.override.md",
              "GEMINI.md", ".cursorrules", ".windsurfrules", "copilot-instructions.md"}
@@ -81,15 +95,81 @@ def kind_of(rel):
 SELF_DIR = os.path.realpath(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+_IGNORED = {}
+# instruction folders are read even when git ignores them: the agent loads them all the same
+KEEP_IGNORED = {".claude", ".claude/skills", ".claude/agents", ".claude/commands", ".cursor", ".cursor/rules",
+                ".agents", ".agents/skills", ".gemini", ".gemini/commands"}
+
+
+def git_ignored(root):
+    """Paths git ignores under ROOT (one call, cached): (set of dirs, set of files), relative, '/'-separated."""
+    key = os.path.realpath(root)
+    if key not in _IGNORED:
+        dirs, files = set(), set()
+        if shutil.which("git"):
+            try:
+                r = subprocess.run(["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory"],
+                                   cwd=root, capture_output=True, text=True, timeout=60)
+                if r.returncode == 0:
+                    for ln in r.stdout.splitlines():
+                        (dirs if ln.endswith("/") else files).add(ln.rstrip("/"))
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        _IGNORED[key] = (dirs, files)
+    return _IGNORED[key]
+
+
+def is_other_checkout(path):
+    """A linked git worktree: its .git is a file pointing into another repo's worktrees/ folder."""
+    g = os.path.join(path, ".git")
+    if os.path.isfile(g):
+        try:
+            return "/worktrees/" in open(g, encoding="utf-8", errors="replace").read(400)
+        except OSError:
+            return False
+    return False
+
+
 def walk(root):
+    """Files of the project itself: not git-ignored, not a virtual environment, not another checkout,
+    not a path the human excluded. An auto-loaded top-level file is kept even when ignored
+    (CLAUDE.local.md is usually ignored and still read by the agent)."""
+    excl = limits_for(root).get("exclude") or []
+    owner = {}   # folder -> the repository whose ignore rules judge it
+
+    def repo_of(dp):
+        if dp not in owner:
+            owner[dp] = dp if (dp == root or os.path.isdir(os.path.join(dp, ".git"))) else repo_of(os.path.dirname(dp))
+        return owner[dp]
+
+    def ignored(full, is_dir):
+        # each file is judged by its own repository's rules: a workspace often ignores the repositories inside it
+        base = repo_of(full if is_dir else os.path.dirname(full))
+        if is_dir and base == full:
+            return False
+        ig_dirs, ig_files = git_ignored(base)
+        return os.path.relpath(full, base).replace(os.sep, "/") in (ig_dirs if is_dir else ig_files)
+
+    def skipped(rel, name, full):
+        return (name in SKIP_DIRS or name.startswith((".venv", "venv")) or os.path.isfile(os.path.join(full, "pyvenv.cfg"))
+                or (rel not in KEEP_IGNORED and ignored(full, True))
+                or os.path.islink(full) or os.path.realpath(full) == SELF_DIR or is_other_checkout(full)
+                or any(fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(rel + "/", g) for g in excl))
+
     for dp, dns, fns in os.walk(root):
-        dns[:] = sorted(d for d in dns if d not in SKIP_DIRS and not os.path.islink(os.path.join(dp, d))
-                        and os.path.realpath(os.path.join(dp, d)) != SELF_DIR)
+        rel_dp = os.path.relpath(dp, root).replace(os.sep, "/")
+        rel_dp = "" if rel_dp == "." else rel_dp + "/"
+        dns[:] = sorted(d for d in dns if not skipped(rel_dp + d, d, os.path.join(dp, d)))
         for fn in sorted(fns):
             p = os.path.join(dp, fn)
+            rel = rel_dp + fn
             if os.path.islink(p):
                 continue
-            yield p, os.path.relpath(p, root).replace(os.sep, "/")
+            if fn not in TOP_NAMES and ignored(p, False):
+                continue
+            if any(fnmatch.fnmatch(rel, g) for g in excl):
+                continue
+            yield p, rel
 
 
 def read(p):
@@ -111,8 +191,33 @@ def limits_for(root):
     return lim
 
 
+CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+CODEX_DEFAULT_BYTES = 32768
+CODEX_FILES = {"AGENTS.md", "AGENTS.override.md"}
+
+
+def codex_limit(root, lim=None):
+    """(bytes or None, where the number comes from). None: no sign of Codex, so no byte limit applies.
+    Codex is seen when the project has a .codex folder or the user has a Codex home folder. Its limit is
+    project_doc_max_bytes in config.toml (32 KiB when unset); this only reads that one number."""
+    lim = lim or limits_for(root)
+    homes = [h for h in (os.path.join(root, ".codex"), CODEX_HOME) if os.path.isdir(h)]
+    if not homes:
+        return None, "Codex not seen: no .codex folder in the project or the home folder"
+    if isinstance(lim.get("top_bytes"), int) and not isinstance(lim.get("top_bytes"), bool):
+        return lim["top_bytes"], ".maintenance/limits.json"
+    for h in homes:
+        cfg = os.path.join(h, "config.toml")
+        if os.path.isfile(cfg):
+            m = re.search(r"(?m)^\s*project_doc_max_bytes\s*=\s*(\d+)", read(cfg))
+            if m:
+                return int(m.group(1)), f"project_doc_max_bytes in {cfg}"
+    return CODEX_DEFAULT_BYTES, f"Codex default; to change it set project_doc_max_bytes in {os.path.join(CODEX_HOME, 'config.toml')}"
+
+
 def inventory(root):
     lim = limits_for(root)
+    codex_bytes, _ = codex_limit(root, lim)
     rows = []
     for p, rel in walk(root):
         k = kind_of(rel)
@@ -124,8 +229,8 @@ def inventory(root):
         if k == "top":
             if words > lim["top_words"]:
                 over.append(f"words {words}>{lim['top_words']}")
-            if nbytes > lim["top_bytes"]:
-                over.append(f"bytes {nbytes}>{lim['top_bytes']}")
+            if codex_bytes and os.path.basename(rel) in CODEX_FILES and nbytes > codex_bytes:
+                over.append(f"bytes {nbytes}>{codex_bytes} (Codex stops reading here)")
         elif k == "skill" and words > lim["skill_words"]:
             over.append(f"words {words}>{lim['skill_words']}")
         elif k == "agent" and words > lim["agent_words"]:
@@ -227,8 +332,12 @@ def named_refs(root):
 
 
 def refs(root):
+    """(dead, checked, ambiguous). DEAD: the path starts in a folder that exists here and then leads nowhere,
+    so it was meant for this project and is wrong. AMBIGUOUS: nothing of it exists here (a bare file name, or a
+    first folder this project does not have); it may be written relative to another repository or machine,
+    so it is listed for a human to read and never counted as a regression."""
     rows, _ = inventory(root)
-    dead, checked = [], 0
+    dead, ambiguous, checked = [], [], 0
     for r in rows:
         p = os.path.join(root, r["path"])
         base = os.path.dirname(p)
@@ -236,14 +345,22 @@ def refs(root):
             checked += 1
             t = os.path.expanduser(tok)
             cands = [t] if os.path.isabs(t) else [os.path.join(base, t), os.path.join(root, t)]
-            if not any(os.path.exists(c.rstrip("/")) for c in cands):
-                dead.append({"file": r["path"], "line": line, "ref": tok,
-                             "host_specific": os.path.isabs(t)})
-    return dead, checked
+            if any(os.path.exists(c.rstrip("/")) for c in cands):
+                continue
+            item = {"file": r["path"], "line": line, "ref": tok, "host_specific": os.path.isabs(t)}
+            if os.path.isabs(t) or tok.startswith(("./", "../")):
+                dead.append(item)
+                continue
+            parts = [x for x in tok.split("/") if x]
+            first = parts[0] if parts else tok
+            anchored = len(parts) > 1 and (os.path.isdir(os.path.join(base, first)) or os.path.isdir(os.path.join(root, first)))
+            (dead if anchored else ambiguous).append(item)
+    return dead, checked, ambiguous
 
 
 SIGNALS = [
-    ("PP-1 pressure", re.compile(r"\b(MUST|NEVER|ALWAYS|CRITICAL|IMPORTANT|MANDATORY)\b|!!")),
+    # English and Turkish emphasis words, capitals only; other languages are read by hand
+    ("PP-1 pressure", re.compile(r"\b(MUST|NEVER|ALWAYS|CRITICAL|IMPORTANT|MANDATORY|ASLA|MUTLAKA|KRİTİK|ÖNEMLİ|ZORUNLU|KESİNLİKLE)\b|!!")),
     ("PP-6 model fossil", re.compile(r"(?i)think step by step|take a deep breath|\b(gpt-[34]|claude[- ](2|3|instant)|sonnet 3\.\d|opus 3|haiku 3)\b|known issue with")),
     ("D1 history", re.compile(r"(?i)\b20\d\d-\d\d-\d\d\b|last updated|^\s*#+\s*change ?log|\bincident\b|added after")),
     ("PP-7 suppressor", re.compile(r"(?i)don'?t narrate|never use bullets|hold all findings")),
@@ -265,11 +382,19 @@ def signals(root):
                 continue
             for cls, rx in SIGNALS:
                 if rx.search(ln):
-                    out.append({"file": r["path"], "line": i, "class": cls, "text": ln.strip()[:140]})
+                    out.append({"file": r["path"], "line": i, "class": cls, "text": ln.strip()[:140],
+                                "safety": bool(cls.startswith("PP-1") and SAFETY_LINE.search(ln))})
     return out, len(rows)
 
 
-SECRET_NAME = re.compile(r"(^|/)(\.env(\..*)?|.*\.pem|.*\.key|id_rsa.*|id_ed25519.*|.*credentials.*|.*secret.*\.(json|ya?ml|txt)|\.npmrc|\.pgpass)$", re.I)
+# matched against the file's own name only, so a folder called "secretary" flags nothing
+SECRET_NAME = re.compile(r"(^|/)(\.env(\.[^/]*)?|[^/]*\.pem|[^/]*\.key|id_rsa[^/]*|id_ed25519[^/]*|[^/]*credentials[^/]*"
+                         r"|([^/]*[._-])?secrets?([._-][^/]*)?\.(json|ya?ml|txt|env)|\.npmrc|\.pgpass)$", re.I)
+# column names that suggest personal or payment data; only the header row of a CSV is ever read
+PII_COLUMN = re.compile(r"(?i)(e[-_ ]?mail|e[-_ ]?posta|phone|telefon|gsm|iban|tckn|tc[-_ ]?(no|kimlik)|ssn|passport|pasaport"
+                        r"|address|adres|birth|do[gğ]um|card|kart|price|fiyat|amount|tutar|payment|[oö]deme|salary|maa[sş])")
+# a line about approval, secrets or data loss: capitals there are usually deliberate (keep-list)
+SAFETY_LINE = re.compile(r"(?i)approv|onay|secret|gizli|password|parola|[sş]ifre|credential|token|delete|\bsil|production|prod\b|backup|yedek|push|deploy")
 
 
 def sh(args, cwd):
@@ -346,6 +471,18 @@ def git_report(root):
                                           and not f.startswith(".maintenance/")]
         info["secret_named_tracked"] = [f for f in trk.split("\n") if f and SECRET_NAME.search(f)
                                         and not f.endswith((".example", ".sample", ".template"))]
+        pii = []
+        for f in [x for x in (trk + "\n" + unt).split("\n") if x.lower().endswith(".csv")][:300]:
+            try:
+                with open(os.path.join(repo, f), encoding="utf-8", errors="replace") as fh:
+                    head = fh.readline(4096)
+            except OSError:
+                continue
+            cols = [c.strip().strip('"').strip("'") for c in re.split(r"[,;\t|]", head)]
+            hit = [c for c in cols if c and len(c) < 40 and PII_COLUMN.search(c)]
+            if len(hit) >= 2:
+                pii.append({"path": f, "columns": hit[:8]})
+        info["personal_data_headers"] = pii
         _, last = sh(["git", "log", "-1", "--format=%cI"], repo)
         info["last_commit"] = last.strip()
         out.append(info)
@@ -354,12 +491,12 @@ def git_report(root):
 
 def collect(root):
     rows, lim = inventory(root)
-    dead, checked = refs(root)
+    dead, checked, ambiguous = refs(root)
     sig, nfiles = signals(root)
     missing, unreached, nunits = named_refs(root)
     return {"mr_version": VERSION, "root": os.path.abspath(root), "limits": lim, "inventory": rows, "unreached_units": unreached,
             "missing_units": missing, "units_existing": nunits,
-            "dead_refs": dead, "refs_checked": checked, "signals": sig,
+            "dead_refs": dead, "refs_checked": checked, "ambiguous_refs": len(ambiguous), "signals": sig,
             "git": git_report(root)}
 
 
@@ -430,6 +567,7 @@ def selftest():
         os.makedirs(os.path.join(d, ".claude", "skills", "demo"))
         clean_top = "# Project\n\nRun `scripts/build.sh` to build. Release notes use the changelog skill.\n"
         os.makedirs(os.path.join(d, "scripts"))
+        os.makedirs(os.path.join(d, "docs"))
         open(os.path.join(d, "scripts", "build.sh"), "w").write("echo ok\n")
         open(os.path.join(d, "CLAUDE.md"), "w").write(clean_top)
         open(os.path.join(d, ".claude", "skills", "demo", "SKILL.md"), "w").write("---\nname: demo\n---\nDo the thing.\n")
@@ -450,9 +588,60 @@ def selftest():
         open(os.path.join(d, ".claude", "skills", "demo", "SKILL.md"), "w").write(big)
         if not any(r["over"] for r in inventory(d)[0]):
             fails.append("inventory: over-limit skill did not fire")
+        # the byte limit is Codex's: it applies to AGENTS.md only, and only when Codex is seen
+        global CODEX_HOME
+        real_home, CODEX_HOME = CODEX_HOME, os.path.join(d, "no-codex-home")
+        blob = "# Agents\n\n" + ("x" * 99 + "\n") * 400
+        for name in ("AGENTS.md", "GEMINI.md"):
+            open(os.path.join(d, name), "w").write(blob)
+        over = lambda: sorted(r["path"] for r in inventory(d)[0] if any(o.startswith("bytes") for o in r["over"]))
+        if over():
+            fails.append(f"limits: byte limit fired with no Codex in sight: {over()}")
+        os.makedirs(os.path.join(d, ".codex"))
+        if over() != ["AGENTS.md"]:
+            fails.append(f"limits: Codex seen, 40 KB AGENTS.md should be the only byte finding: {over()}")
+        open(os.path.join(d, ".codex", "config.toml"), "w").write("model = \"x\"\nproject_doc_max_bytes = 65536\n")
+        if over() or codex_limit(d)[0] != 65536:
+            fails.append(f"limits: raised project_doc_max_bytes not honoured: {codex_limit(d)}")
+        shutil.rmtree(os.path.join(d, ".codex"))
+        os.remove(os.path.join(d, "AGENTS.md"))
+        os.remove(os.path.join(d, "GEMINI.md"))
+        CODEX_HOME = real_home
         open(os.path.join(d, "CLAUDE.md"), "w").write(clean_top + "See `docs/missing.md`.\nYou MUST think step by step.\nAdded 2025-01-02 after the incident.\n")
         if not any(x["ref"] == "docs/missing.md" for x in refs(d)[0]):
             fails.append("refs: dead path did not fire")
+        open(os.path.join(d, "CLAUDE.md"), "w").write(clean_top + "In the other repo see `vscode/` and `elsewhere/notes.md`, and `NOTES.md`.\n")
+        dd, _, amb = refs(d)
+        if dd or sorted(x["ref"] for x in amb) != ["NOTES.md", "elsewhere/notes.md", "vscode/"]:
+            fails.append(f"refs: ambiguous control wrong: dead={[x['ref'] for x in dd]} ambiguous={[x['ref'] for x in amb]}")
+        # ignored folders, virtual environments and excluded globs are not the project
+        for sub in (".venv-test", os.path.join("ignored", "x"), os.path.join("old", "x"), "pyenv",
+                    "inner", os.path.join("inner", "junk")):
+            os.makedirs(os.path.join(d, sub))
+            open(os.path.join(d, sub, "CLAUDE.md"), "w").write("# Sub\n")
+        open(os.path.join(d, "pyenv", "pyvenv.cfg"), "w").write("home = x\n")
+        os.makedirs(os.path.join(d, ".maintenance"), exist_ok=True)
+        json.dump({"exclude": ["old/*"]}, open(os.path.join(d, ".maintenance", "limits.json"), "w"))
+        if shutil.which("git"):
+            sh(["git", "init", "-q"], d)
+            # a repository the workspace ignores is still scanned, by its own ignore rules
+            open(os.path.join(d, ".gitignore"), "w").write("ignored/\ninner/\n")
+            sh(["git", "init", "-q"], os.path.join(d, "inner"))
+            open(os.path.join(d, "inner", ".gitignore"), "w").write("junk/\n")
+            _IGNORED.clear()
+            got = sorted(r["path"] for r in inventory(d)[0])
+            if got != [".claude/skills/demo/SKILL.md", "CLAUDE.md", "inner/CLAUDE.md"]:
+                fails.append(f"inventory: ignored/venv/excluded/nested-repo control wrong: {got}")
+            shutil.rmtree(os.path.join(d, ".git"))
+            os.remove(os.path.join(d, ".gitignore"))
+            _IGNORED.clear()
+        for sub in (".venv-test", "ignored", "old", "pyenv", "inner"):
+            shutil.rmtree(os.path.join(d, sub))
+        os.remove(os.path.join(d, ".maintenance", "limits.json"))
+        open(os.path.join(d, "CLAUDE.md"), "w").write(clean_top + "ASLA production'a onaysız dokunma.\n")
+        s_tr = signals(d)[0]
+        if not s_tr or not s_tr[0].get("safety"):
+            fails.append(f"signals: Turkish emphasis on a safety rule not tagged: {s_tr}")
         open(os.path.join(d, "CLAUDE.md"), "w").write(clean_top + "Deploy with scripts/gone.sh after reading https://example.com/a/b.md and scripts/build.sh.\n")
         open(os.path.join(d, "CLAUDE.md"), "a").write("Check `/ready` and `/api/v1/users.json` on staging.\n"
                                                       "Then `scripts/build.sh --fast` and `git switch -c wip/x`.\n")
@@ -503,6 +692,11 @@ def selftest():
             os.makedirs(g)
             sh(["git", "init", "-q"], g)
             open(os.path.join(g, ".env"), "w").write("X=1\n")
+            os.makedirs(os.path.join(g, "secretary"))
+            open(os.path.join(g, "secretary", "notes.txt"), "w").write("hi\n")
+            open(os.path.join(g, "client_secret.json"), "w").write("{}\n")
+            open(os.path.join(g, "export.csv"), "w").write("Ad,E-posta,Tutar\nx,y,1\n")
+            open(os.path.join(g, "plain.csv"), "w").write("x,y\n1,2\n")
             open(os.path.join(g, "blob.bin"), "wb").write(os.urandom(1_200_000))
             sh(["git", "add", "blob.bin"], g)
             rep = [r for r in git_report(d) if r["repo"] == "repo"]
@@ -512,6 +706,10 @@ def selftest():
                 r = rep[0]
                 if ".env" not in r["secret_named_untracked"]:
                     fails.append("git: untracked .env not reported")
+                if sorted(r["secret_named_untracked"]) != [".env", "client_secret.json"]:
+                    fails.append(f"git: secret-name control wrong: {r['secret_named_untracked']}")
+                if [x["path"] for x in r["personal_data_headers"]] != ["export.csv"]:
+                    fails.append(f"git: personal-data header control wrong: {r['personal_data_headers']}")
                 if not r["staged_large"]:
                     fails.append("git: staged 1.2 MB file not reported")
                 if r["ahead"] is not None or r["branches_with_upstream"] != 0:
@@ -547,16 +745,23 @@ def main(argv):
         lim = limits_for(root)
         src = "defaults + .maintenance/limits.json" if os.path.isfile(os.path.join(root, ".maintenance", "limits.json")) else "defaults"
         print(f"limits in force ({src}):")
+        cb, csrc = codex_limit(root, lim)
         for k in DEFAULT_LIMITS:
-            print(f"  {k}\t{lim[k]}")
+            v = (f"{cb} ({csrc})" if cb else f"off ({csrc})") if k == "top_bytes" else lim[k]
+            print(f"  {k}\t{v}\t# {LIMIT_WHY[k]}")
+        print("These defaults come from one real multi-agent setup; they are a starting point, not a standard.")
         return 0
     if cmd == "inventory":
         return print_inventory(inventory(root)[0])
     if cmd == "refs":
-        dead, checked = refs(root)
-        print(f"path references checked: {checked}; dead: {len(dead)}")
+        dead, checked, ambiguous = refs(root)
+        print(f"path references checked: {checked}; dead: {len(dead)}; ambiguous: {len(ambiguous)}")
         for x in dead:
-            print(f"{x['file']}:{x['line']}\t{x['ref']}{'  (absolute: host-specific)' if x['host_specific'] else ''}")
+            print(f"{x['file']}:{x['line']}\tDEAD\t{x['ref']}{'  (absolute: host-specific)' if x['host_specific'] else ''}")
+        if ambiguous:
+            print("ambiguous = nothing of the path exists here; it may be relative to another repository or machine. Read, do not count:")
+            for x in ambiguous:
+                print(f"{x['file']}:{x['line']}\tAMBIGUOUS\t{x['ref']}")
         missing, unreached, nunits = named_refs(root)
         print(f"named skills/agents/commands: {nunits} exist; named but missing: {len(missing)}; existing but named in no top-level file: {len(unreached)}")
         for x in missing:
@@ -568,7 +773,7 @@ def main(argv):
         sig, n = signals(root)
         print(f"signals: {len(sig)} over {n} instruction files (candidates only; adjudicate each)")
         for s in sig:
-            print(f"{s['file']}:{s['line']}\t{s['class']}\t{s['text']}")
+            print(f"{s['file']}:{s['line']}\t{s['class']}{' [safety rule: likely keep]' if s.get('safety') else ''}\t{s['text']}")
         return 2 if n == 0 else (1 if sig else 0)
     if cmd == "git":
         g = git_report(root)
@@ -582,7 +787,7 @@ def main(argv):
         for r in g:
             print(json.dumps(r))
             if (r["staged_large"] or r["secret_named_untracked"] or r["secret_named_tracked"]
-                    or r["branches_ahead"] or r["branches_with_upstream"] == 0):
+                    or r["branches_ahead"] or r["branches_with_upstream"] == 0 or r["personal_data_headers"]):
                 flag = 1
         return flag
     if cmd == "baseline":
@@ -595,7 +800,7 @@ def main(argv):
         json.dump(data, open(f, "w"), indent=1)
         n = len(data["inventory"])
         print(f"baseline saved: {f} ({n} instruction files, {sum(1 for r in data['inventory'] if r['over'])} over limit, "
-              f"{len(data['dead_refs'])} dead paths of {data['refs_checked']} checked, "
+              f"{len(data['dead_refs'])} dead paths of {data['refs_checked']} checked ({data['ambiguous_refs']} ambiguous), "
               f"{len(data['missing_units'])} missing units ({data['units_existing']} exist), {len(data['signals'])} signals)")
         return 2 if n == 0 else 0
     if cmd == "compare":

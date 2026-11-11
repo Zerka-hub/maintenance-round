@@ -50,6 +50,7 @@ You may write: lessons/rules sections named in step 6, held-lessons.md, rule-sig
 Step 2 of the maintenance round: structure audit. Flag-only: you apply nothing.
 Run checks S1-S9 of references/checks.md § Structure, starting with: python3 <skill>/scripts/mr.py inventory|refs|signals|git <root>.
 mr.py finds only what has a path or name shape; read the files yourself for what it cannot see, and say what you covered by hand.
+mr.py refs prints DEAD and AMBIGUOUS. Only DEAD is a finding as it stands; read each AMBIGUOUS line in its sentence and sort it (checks.md § DEAD and AMBIGUOUS).
 For each check write one measured row: value · command · denominator, and resolved/new/persistent against the previous round's report
 (<path or "first round">). A row you cannot fill is NOT MEASURED, never omitted.
 Every finding uses the finding shape; anything with a fix becomes a diff file (Status: STAGED). Order by severity, then confidence.

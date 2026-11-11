@@ -86,7 +86,7 @@ Ids are append-only across rounds. The orchestrator writes `proposals.md`, after
 `baselines.md`: a `## Limits` section (the limits in force and who chose them), then one row per round:
 
 ```
-| Round | Model | Files | Words | Over limit | Dead paths | Missing units | Probe | Stopped at |
+| Round | Model | Files | Words | Over limit | Dead paths | Ambiguous paths | Missing units | Probe | Stopped at |
 ```
 
 `lessons.md`: the round's own lesson blocks (shape below), newest last, each prefixed with its round date. They are about running the round, so they are never clustered or promoted by the distil; they are appended here at every stop.
@@ -158,7 +158,9 @@ Interactive: one message (or AskUserQuestion call); non-interactive: `GATE-<n>.m
 GATE <n> - <round date> - <N> items. Nothing below is applied until you answer.
 
 SETUP (first round only; these defaults apply unless you say otherwise)
-- Limits: <the mr.py limits output in one line>. State folder: <committed on <branch> | ignored>. Paid probe: none.
+- Limits: <each limit that matters here with its reason from mr.py limits, one line each, auto-loaded files first: they cost context in every session, a skill only when it is used. Leave the byte limit out unless mr.py limits shows it on (Codex)>. Say that the numbers are a starting point from one setup.
+- Left out of the scan: <what git ignores, virtual environments, other checkouts; plus any folder you propose for the exclude list, with the reason>.
+- State folder: <committed on <branch> | ignored>. Paid probe: none.
 
 BATCH (one "yes" applies all of these; or answer "yes except 3, 7")
 1. <Title>. <file § heading>. Why: <one sentence>. Evidence: <short>. [P-12]
@@ -213,6 +215,7 @@ A round that found nothing important says so.>
 | Instruction files | | mr.py inventory | files scanned |
 | Over limit | | mr.py inventory | of N files |
 | Dead path references | | mr.py refs | of N path references checked |
+| Ambiguous path references | | mr.py refs | of the same N; sorted by hand in step 2 |
 | Missing / unreached units | | mr.py refs | of N skills, agents and commands that exist |
 | Signals | | mr.py signals | over N files |
 | Repos ahead of upstream / without upstream | | mr.py git | of N repos |

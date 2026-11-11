@@ -12,9 +12,9 @@ This skill makes an agent audit that layer on a schedule, and **stop twice to as
 
 | It does | It never does |
 |---|---|
-| Reads your instruction files, notes and git history | Change a rule's meaning without showing you the exact diff first |
+| Reads your instruction files, notes and git history. Skips what git ignores, virtual environments and other checkouts | Change a rule's meaning without showing you the exact diff first |
 | Tests every "this is true" sentence against reality | Push, delete data, rewrite history or upgrade anything |
-| Turns a lesson into a rule only when it was seen twice | Read the contents of secret-shaped files (it reports names only) |
+| Turns a lesson into a rule only when it was seen twice | Read the contents of secret-shaped files (it reports names only). Of a CSV file it reads the header row, to flag personal-data columns |
 | Records every removed line verbatim, so any cut can be put back | Install packages. The helper script makes no network calls; the agent may run read-only checks you already have, such as `gh` or `npm audit` |
 | Stops at two gates and waits for your answer | Treat silence as approval |
 
@@ -78,14 +78,16 @@ Ask your agent: *"Run a maintenance round."*
 - It writes its state to `.maintenance/` in your project (report, proposals, every removed line).
 - In a chat session it asks you at each gate. In a headless run it writes `GATE-1.md`, stops, and resumes when you put your answers in `ANSWERS-1.md`.
 - Run it every 2 to 4 weeks. Drift comes back between rounds; that is expected.
+- If your project holds archives, drafts or copies of instruction files, list them in `.maintenance/limits.json` as `{"exclude": ["archive/*"]}`. `mr.py limits` shows every default with the reason for it.
 
 ## How well tested is it
 
 Honestly:
 
-- Run end to end, three times, by agents that had never seen it, on a test repository with ten planted faults. It found all ten, applied only what was approved, and left unrelated files alone. Those runs found two real bugs in the skill, both fixed.
+- Run three times by agents that had never seen it, on a test repository with ten planted faults: twice in parts, and once from start to close through both gates. It found all ten, applied only what was approved, and left unrelated files alone. Those runs found two real bugs in the skill, both fixed.
 - Tested on Linux, without subagents, with gates answered through files.
-- **Not yet tested:** macOS and Windows, large projects, the subagent mode, and runtimes other than Claude Code.
+- An outside tester ran the helper on macOS (Apple Silicon): its self-test passed and it measured a repository with 216 instruction files in about ten seconds. That report led to version 1.2 of the helper: it respects `.gitignore`, separates dead paths from ambiguous ones, and explains its default limits.
+- **Not yet tested:** a full round on macOS or on a large project, Windows, the subagent mode, and runtimes other than Claude Code.
 
 It comes from a longer maintenance chain that has run on a real multi-agent setup since September 2026. This is the portable version: same mechanisms, no private tooling.
 
@@ -111,7 +113,7 @@ scripts/mr.py                  the helper: measures, compares, never edits
 - Talimatların hâlâ gerçeği yansıtıp yansıtmadığını kontrol eder: "her gece yedekleniyor" yazıyorsa gerçekten yedekleniyor mu?
 - Tekrar eden hataları kural önerisine çevirir, şişmiş dosyaları sadeleştirmeyi önerir.
 - **İki kez durur ve size sorar.** Onaylamadığınız hiçbir değişikliği uygulamaz.
-- Hiçbir şeyi silmez, push etmez, paket kurmaz. Yardımcı script internete bağlanmaz. Tüm dosyalar düz metindir; çalıştırmadan önce okuyabilirsiniz.
+- Veri silmez, push etmez, paket kurmaz. Sildiği her talimat satırını kelimesi kelimesine kaydeder. Yardımcı script internete bağlanmaz. Tüm dosyalar düz metindir; çalıştırmadan önce okuyabilirsiniz.
 
 Kurulum: bu klasörü projenizde `.claude/skills/maintenance-round` altına koyun ve agent'ınıza "bakım turu çalıştır" deyin.
 

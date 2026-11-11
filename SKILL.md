@@ -5,7 +5,7 @@ description: A periodic maintenance round for an AI-agent project's instruction 
 
 # Maintenance Round
 
-A round is a chain of passes over the instruction layer. Each pass has one lens, writes its findings in a fixed shape, and hands the next pass a cleaner state. The orchestrator owns the two gates, the abort rule and the report; the passes never ask the human anything.
+A round chains passes over the instruction layer. Each pass has one lens, writes its findings in a fixed shape, and hands the next pass a cleaner state. The orchestrator owns the two gates, the abort rule and the report; the passes never ask the human anything.
 
 ## The rules the round runs on
 
@@ -32,7 +32,7 @@ Record each answer in the report header.
 | Previous round | `.maintenance/baselines.md` and the newest `.maintenance/runs/*/REPORT.md` | First run: scope the last 30 days, create the state folder, and say "first round, no baseline" in every comparison row |
 | Owners | Per-agent folders, CODEOWNERS, a routing table naming owners | One owner: the human. Otherwise a fix to another owner's file is always a staged proposal, even when a free class would apply |
 
-The helper (Python 3 stdlib, no install) is the mechanical half: inventory and sizes, limits, dead path references, prompt-pattern signals, git hygiene, baseline/compare for the abort rule, and its own negative controls. It lives in this skill's folder, not in the project: wherever this skill writes `mr.py`, run `python3 <this skill's folder>/scripts/mr.py`, from the project root. Run `mr.py selftest` first. A FAIL means its numbers are BLIND this round: say so and use the manual commands. The helper never scans its own skill folder or `.maintenance/`: they are the tool, not the subject.
+The helper (Python 3 stdlib, no install) is the mechanical half: inventory and sizes, limits, dead path references, prompt-pattern signals, git hygiene, baseline/compare for the abort rule, and its own negative controls. It lives in this skill's folder, not in the project: wherever this skill writes `mr.py`, run `python3 <this skill's folder>/scripts/mr.py`, from the project root. Run `mr.py selftest` first. A FAIL means its numbers are BLIND this round: say so and use the manual commands. The helper never scans its own skill folder, `.maintenance/` or what git ignores (`references/checks.md`).
 
 ## State the round keeps
 
@@ -41,7 +41,7 @@ Markdown and JSON, at the root of the project (or of the main repo in a multi-re
 ```
 .maintenance/
   baselines.md          limits chosen by the human, closing numbers of each round, round dates
-  limits.json           optional overrides for mr.py's limits
+  limits.json           optional: limit overrides, exclude list
   held-lessons.md       lessons seen once, with seen-count; aged out after 3 rounds untouched
   proposals.md          staged proposals: id | plain-language title | target | diff file | status | rounds open
   rule-sightings.md     per rule: last round any finding touched it (the sunset list)
@@ -133,7 +133,7 @@ Brief: `references/briefs.md § Simplify`; classes and keep-list: `references/si
 - One drafter per owner (or per file group) can run in parallel. Drafters write to `diffs/simplify-*.md` and apply nothing.
 - Every hunk names its class; length alone is never a reason. Keep-list items stay even when a signal matches.
 - Before removing a kind of line everywhere, grep for a step that reads it.
-- A file that earns no hunk is reported clean; an empty package ends the round at step 9.
+- A file that earns no hunk is reported clean; an empty package ends the round at step 9, unless step 6 left items to confirm.
 
 Present the package hunk by hunk (class, why, words before → after, confidence) in gate 1's shape, high-confidence hunks in the batch, together with step 6's tier B and C items. Items answered "later" at gate 1 are not asked again this round. Nothing the human does not take is applied.
 
