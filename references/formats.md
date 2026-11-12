@@ -215,7 +215,8 @@ A round that found nothing important says so.>
 | Instruction files | | mr.py inventory | files scanned |
 | Over limit | | mr.py inventory | of N files |
 | Dead path references | | mr.py refs | of N path references checked |
-| Ambiguous path references | | mr.py refs | of the same N; sorted by hand in step 2 |
+| Ambiguous path references | | mr.py refs | of the same N; decided per group in step 2 |
+| Paths elsewhere (other machine, unmounted) | | mr.py refs | of the same N; not counted |
 | Missing / unreached units | | mr.py refs | of N skills, agents and commands that exist |
 | Signals | | mr.py signals | over N files |
 | Repos ahead of upstream / without upstream | | mr.py git | of N repos |

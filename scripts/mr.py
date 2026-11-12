@@ -7,7 +7,7 @@ Every figure it prints names its denominator; a scan that saw nothing exits 2
 
   python3 mr.py limits    [ROOT]          the limits in force (defaults + limits.json)
   python3 mr.py inventory [ROOT]          instruction files, sizes, limits
-  python3 mr.py refs      [ROOT]          referenced paths that do not exist
+  python3 mr.py refs      [ROOT] [--all]  referenced paths that do not exist (--all: every ambiguous line, ungrouped)
   python3 mr.py signals   [ROOT]          prompt-pattern candidates (to adjudicate)
   python3 mr.py git       [ROOT]          repo hygiene (names and counts, never contents)
   python3 mr.py baseline  [ROOT] --save F all of the above as JSON
@@ -25,7 +25,7 @@ The skill's own folder and .maintenance/ are never scanned: they are the tool, n
 import hashlib
 import json
 import os
-VERSION = "1.4"
+VERSION = "1.5"
 import fnmatch
 import re
 import subprocess
@@ -331,13 +331,45 @@ def named_refs(root):
     return missing, unreached, len(units)
 
 
+PLACEHOLDER = re.compile(r"YYYY|MM-DD|HH-?MM|XXX|\bN\b|(^|/)(foo|bar|example|sample|name|path|to|your|my)[-_./]|(^|/)(your|my)-", re.I)
+
+
+def amb_group(tok):
+    """The shape of an ambiguous reference, so a pile of them is read by group and not line by line."""
+    t = tok.rstrip("/")
+    if re.fullmatch(r"\.[A-Za-z0-9]{1,5}", t):
+        return "extension only"
+    if PLACEHOLDER.search(tok):
+        return "placeholder"
+    if "/" not in t:
+        return "bare name"
+    return "missing first folder " + t.split("/")[0] + "/"
+
+
+def group_ambiguous(ambiguous):
+    """[(group, count, [(ref, times, first place)])], fixed groups first, then missing folders by size."""
+    groups = {}
+    for x in ambiguous:
+        g = groups.setdefault(amb_group(x["ref"]), {})
+        e = g.setdefault(x["ref"], [0, f"{x['file']}:{x['line']}"])
+        e[0] += 1
+    order = {"extension only": 0, "placeholder": 1, "bare name": 2}
+    out = []
+    for name, g in groups.items():
+        ex = sorted(((ref, n, where) for ref, (n, where) in g.items()), key=lambda r: (-r[1], r[0]))
+        out.append((name, sum(n for _, n, _ in ex), ex))
+    return sorted(out, key=lambda r: (order.get(r[0], 3), -r[1], r[0]))
+
+
 def refs(root):
-    """(dead, checked, ambiguous). DEAD: the path starts in a folder that exists here and then leads nowhere,
-    so it was meant for this project and is wrong. AMBIGUOUS: nothing of it exists here (a bare file name, or a
-    first folder this project does not have); it may be written relative to another repository or machine,
-    so it is listed for a human to read and never counted as a regression."""
+    """(dead, checked, ambiguous, elsewhere). DEAD: the path starts in a folder that exists here and then leads
+    nowhere, so it was meant for this project and is wrong. AMBIGUOUS: nothing of it exists here (a bare file
+    name, or a first folder this project does not have); it may be written relative to another repository.
+    ELSEWHERE: an absolute path outside this project that this machine does not have right now (another
+    machine, a volume that is not mounted). Only DEAD is counted by the baseline and the abort rule."""
     rows, _ = inventory(root)
-    dead, ambiguous, checked = [], [], 0
+    dead, ambiguous, elsewhere, checked = [], [], [], 0
+    real_root = os.path.realpath(root)
     for r in rows:
         p = os.path.join(root, r["path"])
         base = os.path.dirname(p)
@@ -348,14 +380,18 @@ def refs(root):
             if any(os.path.exists(c.rstrip("/")) for c in cands):
                 continue
             item = {"file": r["path"], "line": line, "ref": tok, "host_specific": os.path.isabs(t)}
-            if os.path.isabs(t) or tok.startswith(("./", "../")):
+            if os.path.isabs(t):
+                inside = os.path.realpath(t) == real_root or os.path.realpath(t).startswith(real_root + os.sep)
+                (dead if inside else elsewhere).append(item)
+                continue
+            if tok.startswith(("./", "../")):
                 dead.append(item)
                 continue
             parts = [x for x in tok.split("/") if x]
             first = parts[0] if parts else tok
             anchored = len(parts) > 1 and (os.path.isdir(os.path.join(base, first)) or os.path.isdir(os.path.join(root, first)))
             (dead if anchored else ambiguous).append(item)
-    return dead, checked, ambiguous
+    return dead, checked, ambiguous, elsewhere
 
 
 SIGNALS = [
@@ -493,12 +529,12 @@ def git_report(root):
 
 def collect(root):
     rows, lim = inventory(root)
-    dead, checked, ambiguous = refs(root)
+    dead, checked, ambiguous, elsewhere = refs(root)
     sig, nfiles = signals(root)
     missing, unreached, nunits = named_refs(root)
     return {"mr_version": VERSION, "root": os.path.abspath(root), "limits": lim, "inventory": rows, "unreached_units": unreached,
             "missing_units": missing, "units_existing": nunits,
-            "dead_refs": dead, "refs_checked": checked, "ambiguous_refs": len(ambiguous), "signals": sig,
+            "dead_refs": dead, "refs_checked": checked, "ambiguous_refs": len(ambiguous), "elsewhere_refs": len(elsewhere), "signals": sig,
             "git": git_report(root)}
 
 
@@ -613,9 +649,21 @@ def selftest():
         if not any(x["ref"] == "docs/missing.md" for x in refs(d)[0]):
             fails.append("refs: dead path did not fire")
         open(os.path.join(d, "CLAUDE.md"), "w").write(clean_top + "In the other repo see `vscode/` and `elsewhere/notes.md`, and `NOTES.md`.\n")
-        dd, _, amb = refs(d)
+        dd, _, amb, _ = refs(d)
         if dd or sorted(x["ref"] for x in amb) != ["NOTES.md", "elsewhere/notes.md", "vscode/"]:
             fails.append(f"refs: ambiguous control wrong: dead={[x['ref'] for x in dd]} ambiguous={[x['ref'] for x in amb]}")
+        # an absolute path outside the project that is not on this machine is ELSEWHERE; one inside the project is DEAD
+        gone_out = os.path.join(tempfile.gettempdir(), "mr-selftest-not-mounted", "notes.md")
+        gone_in = os.path.join(os.path.realpath(d), "scripts", "gone.sh")
+        open(os.path.join(d, "CLAUDE.md"), "w").write(clean_top + f"The vault is at `{gone_out}`. Run `{gone_in}`.\n")
+        dd, _, _, els = refs(d)
+        if [x["ref"] for x in dd] != [gone_in] or [x["ref"] for x in els] != [gone_out]:
+            fails.append(f"refs: elsewhere control wrong: dead={[x['ref'] for x in dd]} elsewhere={[x['ref'] for x in els]}")
+        open(os.path.join(d, "CLAUDE.md"), "w").write(clean_top + "Types: `.html`. Reports in `runs/YYYY-MM-DD/x.md`. See `NOTES.md`, "
+                                                      "`ham/a.md`, `ham/b.md` and `ham/a.md`.\n")
+        got = [(g, n, len(ex)) for g, n, ex in group_ambiguous(refs(d)[2])]
+        if got != [("extension only", 1, 1), ("placeholder", 1, 1), ("bare name", 1, 1), ("missing first folder ham/", 3, 2)]:
+            fails.append(f"refs: ambiguous grouping wrong: {got}")
         # ignored folders, virtual environments and excluded globs are not the project
         for sub in (".venv-test", os.path.join("ignored", "x"), os.path.join("old", "x"), "pyenv",
                     "inner", os.path.join("inner", "junk")):
@@ -763,14 +811,25 @@ def main(argv):
     if cmd == "inventory":
         return print_inventory(inventory(root)[0])
     if cmd == "refs":
-        dead, checked, ambiguous = refs(root)
-        print(f"path references checked: {checked}; dead: {len(dead)}; ambiguous: {len(ambiguous)}")
+        dead, checked, ambiguous, elsewhere = refs(root)
+        print(f"path references checked: {checked}; dead: {len(dead)}; ambiguous: {len(ambiguous)}; elsewhere: {len(elsewhere)}")
         for x in dead:
-            print(f"{x['file']}:{x['line']}\tDEAD\t{x['ref']}{'  (absolute: host-specific)' if x['host_specific'] else ''}")
-        if ambiguous:
+            print(f"{x['file']}:{x['line']}\tDEAD\t{x['ref']}")
+        if elsewhere:
+            print("elsewhere = an absolute path outside this project that this machine does not have now "
+                  "(another machine, an unmounted volume). Not counted, never a regression:")
+            for x in elsewhere:
+                print(f"{x['file']}:{x['line']}\tELSEWHERE\t{x['ref']}")
+        if ambiguous and "--all" in rest:
             print("ambiguous = nothing of the path exists here; it may be relative to another repository or machine. Read, do not count:")
             for x in ambiguous:
-                print(f"{x['file']}:{x['line']}\tAMBIGUOUS\t{x['ref']}")
+                print(f"{x['file']}:{x['line']}\tAMBIGUOUS\t{x['ref']}\t{amb_group(x['ref'])}")
+        elif ambiguous:
+            print("ambiguous = nothing of the path exists here. Not counted. Decide once per group, not per line "
+                  "(group, lines, distinct paths, most frequent with first place; --all lists every line):")
+            for name, n, ex in group_ambiguous(ambiguous):
+                shown = "; ".join(f"{ref} x{k} ({where})" for ref, k, where in ex[:4])
+                print(f"AMBIGUOUS\t{name}\t{n}\t{len(ex)}\t{shown}{' ...' if len(ex) > 4 else ''}")
         missing, unreached, nunits = named_refs(root)
         print(f"named skills/agents/commands: {nunits} exist; named but missing: {len(missing)}; existing but named in no top-level file: {len(unreached)}")
         for x in missing:
@@ -809,7 +868,7 @@ def main(argv):
         json.dump(data, open(f, "w"), indent=1)
         n = len(data["inventory"])
         print(f"baseline saved: {f} ({n} instruction files, {sum(1 for r in data['inventory'] if r['over'])} over limit, "
-              f"{len(data['dead_refs'])} dead paths of {data['refs_checked']} checked ({data['ambiguous_refs']} ambiguous), "
+              f"{len(data['dead_refs'])} dead paths of {data['refs_checked']} checked ({data['ambiguous_refs']} ambiguous, {data['elsewhere_refs']} elsewhere), "
               f"{len(data['missing_units'])} missing units ({data['units_existing']} exist), {len(data['signals'])} signals)")
         return 2 if n == 0 else 0
     if cmd == "compare":
