@@ -394,7 +394,9 @@ SECRET_NAME = re.compile(r"(^|/)(\.env(\.[^/]*)?|[^/]*\.pem|[^/]*\.key|id_rsa[^/
 PII_COLUMN = re.compile(r"(?i)(e[-_ ]?mail|e[-_ ]?posta|phone|telefon|gsm|iban|tckn|tc[-_ ]?(no|kimlik)|ssn|passport|pasaport"
                         r"|address|adres|birth|do[gğ]um|card|kart|price|fiyat|amount|tutar|payment|[oö]deme|salary|maa[sş])")
 # a line about approval, secrets or data loss: capitals there are usually deliberate (keep-list)
-SAFETY_LINE = re.compile(r"(?i)approv|onay|secret|gizli|password|parola|[sş]ifre|credential|token|delete|\bsil|production|prod\b|backup|yedek|push|deploy")
+SAFETY_LINE = re.compile(r"(?i)approv|onay|secret|gizli|password|parola|[sş]ifre|credential|token|delete|\bsil|production|prod\b|backup|yedek|push|deploy"
+                         r"|privacy|personal data|ki[sş]isel veri|kvkk|gdpr|decrypt|vault"
+                         r"|payment|[öo]deme|invoice|fatura|refund|\biade|\bsend\b|g[öo]nder|message|mesaj|irreversible|geri al[ıi]namaz")
 
 
 def sh(args, cwd):
@@ -642,6 +644,13 @@ def selftest():
         s_tr = signals(d)[0]
         if not s_tr or not s_tr[0].get("safety"):
             fails.append(f"signals: Turkish emphasis on a safety rule not tagged: {s_tr}")
+        for line, want in (("İçeriği ASLA Drive'a kopyalama, kişisel veri içerir.", True),
+                            ("NEVER send the payment link twice.", True),
+                            ("ASLA uzun paragraf yazma.", False)):
+            open(os.path.join(d, "CLAUDE.md"), "w").write(clean_top + line + "\n")
+            got = signals(d)[0]
+            if not got or bool(got[0].get("safety")) != want:
+                fails.append(f"signals: safety tag {'missing' if want else 'false alarm'} on {line!r}: {got}")
         open(os.path.join(d, "CLAUDE.md"), "w").write(clean_top + "Deploy with scripts/gone.sh after reading https://example.com/a/b.md and scripts/build.sh.\n")
         open(os.path.join(d, "CLAUDE.md"), "a").write("Check `/ready` and `/api/v1/users.json` on staging.\n"
                                                       "Then `scripts/build.sh --fast` and `git switch -c wip/x`.\n")
